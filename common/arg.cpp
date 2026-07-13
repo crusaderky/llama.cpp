@@ -1486,6 +1486,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_EMBEDDING, LLAMA_EXAMPLE_RETRIEVAL}));
     add_opt(common_arg(
+        {"--moe-dump-file"}, "FNAME",
+        "dump per-token per-layer MoE routing (gate distribution over all experts, selected expert ids, "
+        "gate weights, per-expert output L2 norm, shared-expert L2, prefill/decode tag, and speculative "
+        "accept/reject) to a binary file for offline analysis (default: disabled). "
+        "Read it with scripts/moe_dump_reader.py. Disables warmup and is a no-op when unset.",
+        [](common_params & params, const std::string & value) {
+            params.moe_dump_file = value;
+        }
+    ).set_env("LLAMA_MOE_DUMP_FILE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SPECULATIVE}));
+    add_opt(common_arg(
         {"--display-prompt"},
         {"--no-display-prompt"},
         string_format("whether to print prompt at generation (default: %s)", params.display_prompt ? "true" : "false"),

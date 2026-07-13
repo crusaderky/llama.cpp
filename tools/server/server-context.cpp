@@ -9,6 +9,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "moe-dump.h"
 #include "fit.h"
 #include "llama.h"
 #include "log.h"
@@ -885,6 +886,9 @@ private:
 
     server_batch batch;
 
+    // optional per-token per-layer MoE routing dump (target model only)
+    std::unique_ptr<common_moe_dump> moe_dump;
+
     llama_model   * model_dft = nullptr;
     llama_context * ctx_dft   = nullptr;
 
@@ -943,6 +947,8 @@ private:
         model_dft = nullptr;
 
         llama_init.reset();
+
+        moe_dump.reset(); // close the dump file (context is already destroyed)
 
         ctx_tgt = nullptr;
         model_tgt = nullptr;
@@ -1096,10 +1102,21 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
+        // attach the MoE routing dump to the target context only (installs the
+        // eval callback into params_base and disables warmup)
+        if (!params_base.moe_dump_file.empty()) {
+            moe_dump = std::make_unique<common_moe_dump>(params_base, params_base.moe_dump_file);
+        }
+
         llama_init = common_init_from_params(params_base);
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
+
+        // make sure the draft / MTP context created below does NOT inherit the
+        // MoE dump eval callback (we only want to capture the target model)
+        params_base.cb_eval           = nullptr;
+        params_base.cb_eval_user_data = nullptr;
 
         if (model_tgt == nullptr) {
             SRV_ERR("failed to load model, '%s'\n", params_base.model.path.c_str());
@@ -3634,6 +3651,22 @@ private:
             n_empty_consecutive = 0;
         }
 
+        // MoE routing dump: provide per-token metadata for this batch view, then
+        // bracket the decode so the eval callback attributes tensors to it
+        if (moe_dump) {
+            const int32_t n = batch_view.n_tokens;
+            std::vector<int32_t> md_pos(n);
+            std::vector<int32_t> md_seq(n);
+            std::vector<uint8_t> md_dec(n);
+            for (int32_t j = 0; j < n; ++j) {
+                const auto & tk = batch.tokens[off + j];
+                md_pos[j] = tk.pos;
+                md_seq[j] = tk.id_slot;
+                md_dec[j] = tk.is_prompt ? 0 : 1;
+            }
+            moe_dump->begin_batch(md_pos.data(), md_seq.data(), md_dec.data(), n);
+        }
+
         // TODO @ngxson : dft model may have different n_embd than the tgt model, so we check & reject if that's the case
         // this case is not currently used by any models, but may need to be supported in the future
         if (spec && batch.has_embd) {
@@ -3653,6 +3686,9 @@ private:
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
             ret = llama_decode(ctx_tgt, batch_view);
+            if (moe_dump) {
+                moe_dump->end_batch();
+            }
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
@@ -3890,6 +3926,21 @@ private:
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+
+                // MoE dump: record accept/reject for each verified decode token of
+                // this step (index 0 is the always-accepted sampled token, indices
+                // 1.. are the draft tokens). accepted.size() tokens were accepted.
+                if (moe_dump) {
+                    const size_t nv = slot.spec_i_batch.size();
+                    std::vector<int32_t> md_ap(nv);
+                    std::vector<uint8_t> md_aa(nv);
+                    for (size_t k = 0; k < nv; ++k) {
+                        md_ap[k] = batch.tokens[slot.spec_i_batch[k]].pos;
+                        md_aa[k] = (k < accepted.size()) ? 1 : 0;
+                    }
+                    moe_dump->mark_accept(slot.id, md_ap.data(), md_aa.data(), (int32_t) nv);
+                }
+
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);

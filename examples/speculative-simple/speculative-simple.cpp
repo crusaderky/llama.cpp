@@ -1,5 +1,6 @@
 #include "arg.h"
 #include "common.h"
+#include "moe-dump.h"
 #include "sampling.h"
 #include "speculative.h"
 #include "log.h"
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <clocale>
+#include <memory>
 #include <cstdio>
 #include <cstring>
 #include <cinttypes>
@@ -43,11 +45,22 @@ int main(int argc, char ** argv) {
 
     llama_context * ctx_tgt = NULL;
 
+    // optional per-token per-layer MoE routing dump (target model only)
+    std::unique_ptr<common_moe_dump> moe_dump;
+    if (!params.moe_dump_file.empty()) {
+        moe_dump = std::make_unique<common_moe_dump>(params, params.moe_dump_file);
+    }
+
     // load the target model
     auto llama_init_tgt = common_init_from_params(params);
 
     model_tgt = llama_init_tgt->model();
     ctx_tgt   = llama_init_tgt->context();
+
+    // prevent the draft context (created below from a copy of params) from
+    // inheriting the MoE dump eval callback - we only capture the target model
+    params.cb_eval           = nullptr;
+    params.cb_eval_user_data = nullptr;
 
     const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
 
@@ -130,7 +143,15 @@ int main(int argc, char ** argv) {
             common_batch_add(batch_prompt, inp[i], i, { seq_id }, false);
         }
 
+        if (moe_dump) {
+            const int32_t n = (int32_t) inp.size() - 1;
+            std::vector<int32_t> mp(n), ms(n, seq_id);
+            std::vector<uint8_t> md(n, 0); // prefill
+            for (int32_t j = 0; j < n; ++j) mp[j] = j;
+            moe_dump->begin_batch(mp.data(), ms.data(), md.data(), n);
+        }
         llama_decode(ctx_tgt, batch_prompt);
+        if (moe_dump) moe_dump->end_batch();
 
         if (!common_speculative_process(spec, batch_prompt)) {
             LOG_ERR("%s", "failed to process speculative prompt\n");
@@ -230,7 +251,18 @@ int main(int argc, char ** argv) {
 
             //LOG_DBG("target batch: %s\n", string_from(ctx_tgt, batch_tgt).c_str());
 
+            if (moe_dump) {
+                const int32_t n = batch_tgt.n_tokens;
+                std::vector<int32_t> mp(n), ms(n);
+                std::vector<uint8_t> md(n, 1); // decode (verification)
+                for (int32_t j = 0; j < n; ++j) {
+                    mp[j] = batch_tgt.pos[j];
+                    ms[j] = batch_tgt.seq_id[j][0];
+                }
+                moe_dump->begin_batch(mp.data(), ms.data(), md.data(), n);
+            }
             llama_decode(ctx_tgt, batch_tgt);
+            if (moe_dump) moe_dump->end_batch();
         }
 
         // feed the batch to the speculative implementation(s) - this drives the draft model, MTP, Eagle3, etc.
@@ -260,6 +292,20 @@ int main(int argc, char ** argv) {
         //LOG_DBG("ids: %s\n", string_from(ctx_tgt, ids).c_str());
 
         GGML_ASSERT(ids.size() > 0); // there will always be at least one accepted token
+
+        // MoE dump: record accept/reject for each verified decode token of this
+        // step. batch_tgt holds [id_last, draft0, .., draftN-1]; ids.size() of
+        // them were accepted (index 0 is the always-accepted target token).
+        if (moe_dump) {
+            const int32_t n = batch_tgt.n_tokens;
+            std::vector<int32_t> mp(n);
+            std::vector<uint8_t> ma(n);
+            for (int32_t k = 0; k < n; ++k) {
+                mp[k] = batch_tgt.pos[k];
+                ma[k] = ((size_t) k < ids.size()) ? 1 : 0;
+            }
+            moe_dump->mark_accept(seq_id, mp.data(), ma.data(), n);
+        }
 
         // check for partial draft acceptance:
         // if the context doesn't support partial sequence removal, restore the checkpoint
