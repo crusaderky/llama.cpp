@@ -183,6 +183,8 @@ struct kl_divergence_result {
     double sum_p_diff       = 0.0;
     double sum_p_diff2      = 0.0;
     double sum_p_diff4      = 0.0;
+    double sum_coll         = 0.0;
+    double sum_coll2        = 0.0;
     float  max_p_diff       = 0.0f;
     size_t n_same_top       = 0.0;
     size_t count            = 0.0;
@@ -219,6 +221,15 @@ static std::pair<double, float> log_softmax(int n_vocab, const float * logits, c
 
     max_logit += log_sum_exp;
     double sum = 0;
+    // Collision probability sum_i p_base(i)*p(i): the chance that independent
+    // temperature-1 samples from the base and the candidate distribution pick the
+    // same token.  Complements "same top p", which only compares the argmax and so
+    // only describes greedy (temperature 0) decoding.  This is not measured against
+    // 100%: the reference point is the base model's self-collision
+    // sum_i p_base(i)^2, obtained by using the same model for the logits file and
+    // for --model.  A candidate that sharpens the distribution can score above that
+    // reference; the only hard bound is sqrt(sum_i p_base(i)^2 * sum_i p(i)^2).
+    double sum_coll = 0;
     int imax_base = -1;
     float p_log_base_max = 0;
     for (int i = 0; i < n_vocab; ++i) {
@@ -229,11 +240,15 @@ static std::pair<double, float> log_softmax(int n_vocab, const float * logits, c
         }
         if (p_log_base > -16.f) {
             const float p_base = expf(p_log_base);
-            sum += p_base * (p_log_base - logits[i] + max_logit);
+            sum      += p_base * (p_log_base - logits[i] + max_logit);
+            // tokens skipped by the cutoff above contribute < e^-16 each
+            sum_coll += p_base * expf(logits[i] - max_logit);
         }
     }
-    kld.sum_kld  += sum;
-    kld.sum_kld2 += sum*sum;
+    kld.sum_kld   += sum;
+    kld.sum_kld2  += sum*sum;
+    kld.sum_coll  += sum_coll;
+    kld.sum_coll2 += sum_coll*sum_coll;
     ++kld.count;
     if (imax == imax_base) {
         ++kld.n_same_top;
@@ -273,6 +288,8 @@ static void process_logits(int n_vocab, const float * logits, const int * tokens
                 kld.sum_p_diff       += local_kld.sum_p_diff;
                 kld.sum_p_diff2      += local_kld.sum_p_diff2;
                 kld.sum_p_diff4      += local_kld.sum_p_diff4;
+                kld.sum_coll         += local_kld.sum_coll;
+                kld.sum_coll2        += local_kld.sum_coll2;
                 kld.n_same_top       += local_kld.n_same_top;
                 kld.max_p_diff        = std::max(kld.max_p_diff, local_kld.max_p_diff);
                 kld.count            += local_kld.count;
@@ -1855,7 +1872,7 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
             }
             LOG("%.2f minutes\n", total_seconds / 60.0);
             LOG("\n");
-            LOG("chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p\n");
+            LOG("chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p        Same sampled p\n");
         }
 
         // Read log probs for each sequence in the batch
@@ -1897,6 +1914,9 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
             double p_top_val = 1.*kld.n_same_top/kld.count;
             double p_top_unc = sqrt(p_top_val*(1 - p_top_val)/(kld.count - 1));
             LOG("    %6.3lf ± %6.3lf %%", 100.0*p_top_val, 100.0*p_top_unc);
+
+            auto coll = mean_and_uncertainty(kld.sum_coll, kld.sum_coll2, kld.count);
+            LOG("    %6.3lf ± %6.3lf %%", 100.0*coll.first, 100.0*coll.second);
 
             LOG("\n");
         }
@@ -2003,6 +2023,9 @@ static void kl_divergence(llama_context * ctx, const common_params & params) {
 
     const double same_top_p = 1.0*kld.n_same_top/kld.count;
     LOG("Same top p: %6.3lf ± %5.3lf %%\n", 100.0*same_top_p, 100.0*sqrt(same_top_p*(1.0 - same_top_p)/(kld.count - 1)));
+
+    auto coll = mean_and_uncertainty(kld.sum_coll, kld.sum_coll2, kld.count);
+    LOG("Same sampled p: %6.3lf ± %5.3lf %%\n", 100.0*coll.first, 100.0*coll.second);
 }
 
 // satisfies -Wmissing-declarations
