@@ -1649,6 +1649,7 @@ void server_models_routes::init_routes() {
         for (const auto & meta : all_models) {
             json status {
                 {"value",  server_model_status_to_string(meta.status)},
+                {"args",   meta.args},
             };
             if (meta.is_failed()) {
                 status["exit_code"] = meta.exit_code;
