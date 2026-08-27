@@ -309,6 +309,10 @@ llama_memory_i * llama_memory_hybrid::get_mem_attn() const {
     return mem_attn.get();
 }
 
+llama_kv_cache * llama_memory_hybrid::get_mem_attn_kv() const {
+    return dynamic_cast<llama_kv_cache *>(mem_attn.get());
+}
+
 llama_memory_recurrent * llama_memory_hybrid::get_mem_recr() const {
     return mem_recr.get();
 }

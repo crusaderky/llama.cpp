@@ -112,6 +112,8 @@ public:
     //
 
     llama_memory_i * get_mem_attn() const;
+    // nullptr unless the attention memory is a plain KV cache (not KVarN)
+    llama_kv_cache * get_mem_attn_kv() const;
     llama_memory_recurrent * get_mem_recr() const;
 
 private:
