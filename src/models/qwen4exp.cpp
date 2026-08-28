@@ -117,20 +117,33 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     const int64_t hc_dim = hc * n_embd;
     const int64_t hc_lr  = hparams.hc_low_rank;
 
+    // A detached draft head ships as its own GGUF: the nextn metadata and the trailing block
+    // are there, the trunk is not. Probe a trunk tensor to spot that, and the MTP block to spot
+    // the reverse -- nextn metadata kept but the head stripped -- exactly as deepseek2 does.
+    // Either way the block index is unchanged: the head is always blk.<n_layer>.
+    const std::string mtp_probe = "blk." + std::to_string(n_layer) + ".nextn.eh_proj.weight";
+    const bool mtp_only   = hparams.n_layer_nextn > 0 && ml.get_weight("blk.0.hc_attn_norm.weight") == nullptr;
+    const bool trunk_only = hparams.n_layer_nextn > 0 && ml.get_weight(mtp_probe.c_str())          == nullptr;
+
+    const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
+
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
 
-    // there is no output_norm: the final hyper-connection mixer carries it
-    hc_head_norm = create_tensor(tn(LLM_TENSOR_HC_HEAD_NORM, "weight"), { hc_dim }, 0);
-    hc_head_down = create_tensor(tn(LLM_TENSOR_HC_HEAD_DOWN, "weight"), { hc_dim, hc_lr }, 0);
-    hc_head_up   = create_tensor(tn(LLM_TENSOR_HC_HEAD_UP,   "weight"), { hc_lr, hc_dim }, 0);
+    // there is no output_norm: the final hyper-connection mixer carries it.
+    // a detached head carries no trunk mixer, and the checkpoint's own head mixer is unindexed,
+    // so exports land it on these names instead of the per-block ones -- see below
+    hc_head_norm = create_tensor(tn(LLM_TENSOR_HC_HEAD_NORM, "weight"), { hc_dim }, trunk_flags);
+    hc_head_down = create_tensor(tn(LLM_TENSOR_HC_HEAD_DOWN, "weight"), { hc_dim, hc_lr }, trunk_flags);
+    hc_head_up   = create_tensor(tn(LLM_TENSOR_HC_HEAD_UP,   "weight"), { hc_lr, hc_dim }, trunk_flags);
 
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
     if (output == NULL) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
     }
 
-    // flat [ple_head_dim, n_rows] gather target; n_rows is padded, so read it back
-    if (hparams.ple_n_heads > 0) {
+    // flat [ple_head_dim, n_rows] gather target; n_rows is padded, so read it back.
+    // the PLE layer is in the trunk, so a detached head describes no table and carries none
+    if (hparams.ple_n_heads > 0 && !mtp_only) {
         const std::string ple_name = tn(LLM_TENSOR_PER_LAYER_TOKEN_EMBD, "weight").str();
         const auto & ple_w = ml.require_weight(ple_name.c_str());
         const int64_t ple_rows = ple_w.tensor->ne[1];
@@ -146,14 +159,17 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     }
 
     // MTP tensors sit in the trailing blocks; skip them entirely unless a draft head was asked for
-    const int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
+    int mtp_flags = trunk_only ? TENSOR_NOT_REQUIRED : 0;
+    if (!ml.load_mtp) {
+        mtp_flags |= TENSOR_SKIP;
+    }
 
     for (int il = 0; il < (int) hparams.n_layer_all; ++il) {
         auto & layer = layers[il];
 
         // the MTP block is structurally a trunk block: is_recr()/is_ple() are both false past
         // the trunk, so it takes the full-attention + MoE path below with no special casing
-        const int flags = il < n_layer ? 0 : mtp_flags;
+        const int flags = il < n_layer ? trunk_flags : mtp_flags;
 
         const int64_t n_ff_exp   = hparams.n_ff_exp   ? hparams.n_ff_exp   : n_ff / n_expert_used;
         const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
@@ -231,10 +247,24 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         layer.nextn.eh_proj = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", il), { 2 * n_embd, n_embd }, flags);
 
         // the head's own output mixer, mirroring the trunk's hc_head_*: it collapses the
-        // hc streams and stands in for the output norm, of which qwen4exp has none
-        layer.nextn.hc_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_NORM, "weight", il), { hc_dim }, flags);
-        layer.nextn.hc_head_down = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_DOWN, "weight", il), { hc_dim, hc_lr }, flags);
-        layer.nextn.hc_head_up   = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_UP,   "weight", il), { hc_lr, hc_dim }, flags);
+        // hc streams and stands in for the output norm, of which qwen4exp has none.
+        // it is unindexed in the checkpoint (mtp.hyper_connection_mixer.*), so a detached-head
+        // export -- which has no trunk mixer to collide with -- writes it to the model-level
+        // hc_head_* names instead. accept either spelling.
+        layer.nextn.hc_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_NORM, "weight", il), { hc_dim }, flags | TENSOR_NOT_REQUIRED);
+        layer.nextn.hc_head_down = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_DOWN, "weight", il), { hc_dim, hc_lr }, flags | TENSOR_NOT_REQUIRED);
+        layer.nextn.hc_head_up   = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_UP,   "weight", il), { hc_lr, hc_dim }, flags | TENSOR_NOT_REQUIRED);
+
+        // eh_proj is required whenever the head is loaded at all, so it tells the two apart
+        if (layer.nextn.eh_proj && !layer.nextn.hc_head_norm) {
+            if (!hc_head_norm) {
+                throw std::runtime_error(format("qwen4exp MTP head %d has no output mixer: "
+                        "neither blk.%d.nextn.hc_head_norm nor output_hc_norm is present", il, il));
+            }
+            layer.nextn.hc_head_norm = hc_head_norm;
+            layer.nextn.hc_head_down = hc_head_down;
+            layer.nextn.hc_head_up   = hc_head_up;
+        }
 
         // qwen4exp sets mtp_use_dedicated_embeddings=false, so these are absent and the
         // head falls back to the trunk's embedding table and LM head
@@ -469,7 +499,8 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     GGML_ASSERT(layer.nextn.eh_proj     && "MTP block missing nextn.eh_proj");
     GGML_ASSERT(layer.nextn.enorm       && "MTP block missing nextn.enorm");
     GGML_ASSERT(layer.nextn.hnorm       && "MTP block missing nextn.hnorm");
-    GGML_ASSERT(layer.nextn.hc_head_norm && "MTP block missing nextn.hc_head_norm");
+    // resolved at load time to either blk.%d.nextn.hc_head_* or the model-level hc_head_*
+    GGML_ASSERT(layer.nextn.hc_head_norm && "MTP block missing its output mixer");
 
     int sections[4];
     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
