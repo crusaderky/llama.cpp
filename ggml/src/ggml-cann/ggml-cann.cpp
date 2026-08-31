@@ -2818,6 +2818,7 @@ static void ggml_backend_cann_device_get_props(ggml_backend_dev_t dev, ggml_back
         /* .host_buffer           = */ host_buffer,
         /* .buffer_from_host_ptr  = */ false,
         /* .events                = */ true,
+        /* .copy_stream           = */ false,
         /* .mmap_support          = */ true,
     };
 }
