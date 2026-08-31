@@ -655,6 +655,7 @@ static void ggml_backend_zendnn_device_get_props(ggml_backend_dev_t dev, struct 
         /* .host_buffer          = */ false,
         /* .buffer_from_host_ptr = */ true,
         /* .events               = */ false,
+        /* .copy_stream          = */ false,
         /* .mmap_support         = */ true,
     };
 }
