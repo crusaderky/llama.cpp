@@ -4528,6 +4528,16 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     ggml_cuda_set_device(cuda_ctx->device);
 
+    // XXX debug bisect (do not merge): env-gated CUDA-graph bypass.
+    static const bool disable_cuda_graph = [] {
+        const char * env = getenv("GGML_CUDA_DISABLE_GRAPHS");
+        return env != nullptr && std::atoi(env) != 0;
+    }();
+    if (disable_cuda_graph) {
+        ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, false, false, nullptr);
+        return GGML_STATUS_SUCCESS;
+    }
+
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
     const void * graph_key = nullptr;

@@ -4,6 +4,9 @@
 #include "log.h"
 #include "llama.h"
 
+// XXX debug (do not merge): internal header for the KV cache dump.
+#include "../../src/llama-kv-cache.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -67,6 +70,49 @@ static results_log_softmax log_softmax(int n_vocab, const float * logits, int to
         sum_exp += expf(logits[i] - max_logit);
     }
     return {logits[tok] - max_logit - log(sum_exp), logits[tok], expf(logits[tok] - max_logit) / (float) sum_exp};
+}
+
+// XXX debug (do not merge): env-gated raw KV cache storage dump after each
+// chunk. KVCACHE_DUMP=<dir> enables it, KVCACHE_DUMP_LAYERS=0,1,... selects
+// the layers (default: 0). One file per side/layer/chunk.
+static void dump_kv_cache_chunk(llama_context * ctx, int chunk_idx) {
+    const char * dir = getenv("KVCACHE_DUMP");
+    if (dir == nullptr || dir[0] == '\0') {
+        return;
+    }
+    std::string layers = getenv("KVCACHE_DUMP_LAYERS") != nullptr ? getenv("KVCACHE_DUMP_LAYERS") : "0";
+
+    auto * kv = dynamic_cast<llama_kv_cache *>(llama_get_memory(ctx));
+    if (kv == nullptr) {
+        LOG_ERR("%s: memory is not a plain llama_kv_cache, skipping dump\n", __func__);
+        return;
+    }
+
+    std::stringstream ls(layers);
+    std::string tok;
+    while (std::getline(ls, tok, ',')) {
+        const int il = std::atoi(tok.c_str());
+        for (const char * side : { "k", "v" }) {
+            ggml_tensor * t = side[0] == 'k' ? kv->get_k_storage(il) : kv->get_v_storage(il);
+            if (t == nullptr) {
+                LOG_ERR("%s: no %s storage for layer %d\n", __func__, side, il);
+                continue;
+            }
+            const size_t nbytes = ggml_nbytes(t);
+            std::vector<uint8_t> buf(nbytes);
+            ggml_backend_tensor_get(t, buf.data(), 0, nbytes);
+            char path[512];
+            snprintf(path, sizeof(path), "%s/%s_l%d_c%d.bin", dir, side, il, chunk_idx);
+            FILE * f = fopen(path, "wb");
+            if (f != nullptr) {
+                fwrite(buf.data(), 1, nbytes, f);
+                fclose(f);
+                LOG_INF("%s: dumped %s (%zu bytes)\n", __func__, path, nbytes);
+            } else {
+                LOG_ERR("%s: cannot open %s\n", __func__, path);
+            }
+        }
+    }
 }
 
 static int ppl_max_logits_rows(int n_vocab, const common_params & params) {
@@ -452,6 +498,8 @@ static results_perplexity perplexity_v2(llama_context * ctx, const common_params
 
         llama_batch_free(batch);
 
+        dump_kv_cache_chunk(ctx, i + 1);  // XXX debug (do not merge)
+
         const auto t_end = std::chrono::high_resolution_clock::now();
 
         if (i == 0) {
@@ -663,6 +711,7 @@ static results_perplexity perplexity(llama_context * ctx, const common_params & 
             }
         }
 
+        dump_kv_cache_chunk(ctx, i + 1);  // XXX debug (do not merge)
 
         if (i == 0) {
             llama_synchronize(ctx);

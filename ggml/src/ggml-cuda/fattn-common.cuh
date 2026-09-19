@@ -1847,4 +1847,31 @@ void launch_fattn(
             body_meta ? (float2 *) body_meta->data : nullptr, parallel_blocks);
     }
     CUDA_CHECK(cudaGetLastError());
+
+    // XXX debug (do not merge): dump the (dequantized) K/V f16 buffers and the
+    // final FA output for the first two calls with a full >=8192-row KV view.
+    if (const char * fa_dump_dir = getenv("GGML_CUDA_DUMP_FA")) {
+        static int fa_dump_calls = 0;
+        if (K->ne[1] >= 8192 && fa_dump_calls < 2) {
+            const int idx = fa_dump_calls++;
+            fprintf(stderr, "FA-DUMP call %d: stream_k=%d blocks=(%d,%d,%d) parallel_blocks=%d ntiles_dst=%d ntiles_KV=%d ntiles_x=%d nbatch_fa=%d ncols=%d nq=%d nkv=%lld\n",
+                    idx, (int) stream_k, blocks_num.x, blocks_num.y, blocks_num.z, parallel_blocks, ntiles_dst, ntiles_KV, ntiles_x, nbatch_fa, ncols, (int) Q->ne[1], (long long) K->ne[1]);
+            CUDA_CHECK(cudaStreamSynchronize(main_stream));
+            const size_t kbytes = size_t(K->ne[0]) * K->ne[1] * K->ne[2] * K->ne[3] * sizeof(half);
+            const size_t vbytes = size_t(V->ne[0]) * V->ne[1] * V->ne[2] * V->ne[3] * sizeof(half);
+            std::vector<uint8_t> tmp(std::max<size_t>({kbytes, vbytes, ggml_nbytes(KQV), ggml_nbytes(dst->src[0])}));
+            char path[512];
+            for (const auto & d : {std::make_tuple((const void *) K_data, kbytes, "kf16"),
+                                   std::make_tuple((const void *) V_data, vbytes, "vf16"),
+                                   std::make_tuple((const void *) KQV->data, ggml_nbytes(KQV), "out"),
+                                   std::make_tuple((const void *) dst->src[0]->data, ggml_nbytes(dst->src[0]), "q")}) {
+                const void * ptr; size_t nbytes; const char * nm;
+                std::tie(ptr, nbytes, nm) = d;
+                CUDA_CHECK(cudaMemcpy(tmp.data(), ptr, nbytes, cudaMemcpyDeviceToHost));
+                snprintf(path, sizeof(path), "%s/%s_%d.bin", fa_dump_dir, nm, idx);
+                FILE * f = fopen(path, "wb");
+                if (f) { fwrite(tmp.data(), 1, nbytes, f); fclose(f); }
+            }
+        }
+    }
 }
