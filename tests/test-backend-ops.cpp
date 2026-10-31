@@ -12892,6 +12892,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // qwen3.8-flash-next routed experts (512 experts, 10 used): gate/up k=2560 -> m=640, down k=640 -> m=2560.
+    // Trellis types against the K/IQ types they replace (agention perf/tqk-mmv); 32..512 are prefill batches.
+    for (int bs : {1, 2, 4, 32, 128, 512}) {
+        for (ggml_type type_a : {GGML_TYPE_TQK6, GGML_TYPE_TQK7, GGML_TYPE_TQ2_T, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ2_XS}) {
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 640, bs, 2560));
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 2560, bs, 640));
+        }
+    }
+
+    // Same expert shapes with 32 experts: CPU-backend perf (--n-cpu-moe) without the
+    // 512-expert setup cost of the CPU trellis placeholder encoder.
+    for (int bs : {1, 4, 32}) {
+        for (ggml_type type_a : {GGML_TYPE_TQK6, GGML_TYPE_TQK7, GGML_TYPE_TQ2_T, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL}) { // k=640: no 256-blocks
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 32, 10, false, 640, bs, 2560));
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 32, 10, false, 2560, bs, 640));
+        }
+    }
+
     // qwen3-30b-a3b
     for (int bs : {1, 4, 8, 32, 64, 128, 256, 512}) {
         for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_XS}) {
