@@ -433,7 +433,6 @@ extern "C" {
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
         GGML_TYPE_F8_E4M3 = 43,
-        GGML_TYPE_COUNT   = 44,
         // Trellis-coded 2.125 bpw (QTIP-style bitshift trellis, L=16 K=8 V=4, hashed
         // 2-D "Hyb" codebook), group 128. Written by the agention-infer Rust tooling.
         GGML_TYPE_TQ2_T   = 144,
