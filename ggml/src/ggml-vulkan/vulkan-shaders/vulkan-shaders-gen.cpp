@@ -258,7 +258,7 @@ bool is_trellis_quant(const std::string& type_name) {
 }
 
 bool is_lut_quant(const std::string& type_name) {
-    return is_iq_quant(type_name) || type_name == "mxfp4" || type_name == "nvfp4";
+    return is_iq_quant(type_name) || type_name == "mxfp4" || type_name == "nvfp4" || is_trellis_quant(type_name);
 }
 
 std::string lut_load_vec_a(const std::string& type_name) {
