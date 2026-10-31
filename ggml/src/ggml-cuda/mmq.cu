@@ -70,6 +70,16 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
             mul_mat_q_case<GGML_TYPE_IQ4_NL, GGML_PREC_Q8>(ctx, args, stream);
             break;
 // -----------------------------------------------------------------------
+        case GGML_TYPE_TQ2_T:
+            mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, args, stream);
+            break;
+        case GGML_TYPE_TQK6:
+            mul_mat_q_case<GGML_TYPE_TQK6>(ctx, args, stream);
+            break;
+        case GGML_TYPE_TQK7:
+            mul_mat_q_case<GGML_TYPE_TQK7>(ctx, args, stream);
+            break;
+// -----------------------------------------------------------------------
         case GGML_TYPE_MXFP4:
             // src1 at Q4 uses the native FP4 instructions, which are Blackwell-only
             if (prec_src1 == GGML_PREC_Q4) {
@@ -413,6 +423,20 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             mmq_supported = true;
+            break;
+// -------------------------------------------------
+        case GGML_TYPE_TQ2_T:
+        case GGML_TYPE_TQK6:
+        case GGML_TYPE_TQK7:
+            // Trellis types: decoded to int8 (per-16 scales) in the tile loader.
+            // GGML_CUDA_TQ_MMQ=0 falls back to dequant + BLAS (A/B testing).
+            {
+                static const bool tq_mmq = [] {
+                    const char * env = getenv("GGML_CUDA_TQ_MMQ");
+                    return env == nullptr || atoi(env) != 0;
+                }();
+                mmq_supported = tq_mmq;
+            }
             break;
         default:
             mmq_supported = false;

@@ -135,3 +135,41 @@ static __device__ __forceinline__ float vec_dot_tq_q8_1(
     }
     return __half2float(b->d) * __low2float(b8->ds) * sum;
 }
+
+// MMQ (batched) path: lane l of block x as 16 int8 values (4 packed ints, weight order) with
+// one float scale per lane, i.e. weights ~= scale * q. The codebook values of the lane are
+// requantized symmetrically against their own max |value| (per-16 scales, the Q8_0_16 tile
+// layout of IQ2_XS / Q3_K), so the added error is far below the trellis quantization error.
+template <ggml_type type>
+static __device__ __forceinline__ float tq_lane_to_q8(const void * x, const int l, int q[TQ_STEPS_LANE]) {
+    typedef typename tq_block_info<type>::block_t block_t;
+    const block_t * b = (const block_t *) x;
+    const uint32_t * lut = tq_lut_global();
+
+    uint32_t s[TQ_STEPS_LANE];
+    tq_states4<type>(b->qs, l, s);
+
+    float v[16];
+    float amax = 0.0f;
+#pragma unroll
+    for (int i = 0; i < TQ_STEPS_LANE; ++i) {
+        float2 p0, p1;
+        tq_step(lut, s[i], p0, p1);
+        v[4*i + 0] = p0.x;
+        v[4*i + 1] = p0.y;
+        v[4*i + 2] = p1.x;
+        v[4*i + 3] = p1.y;
+        amax = fmaxf(amax, fmaxf(fmaxf(fabsf(p0.x), fabsf(p0.y)), fmaxf(fabsf(p1.x), fabsf(p1.y))));
+    }
+
+    const float inv = amax > 0.0f ? 127.0f/amax : 0.0f;
+#pragma unroll
+    for (int i = 0; i < TQ_STEPS_LANE; ++i) {
+        const int q0 = __float2int_rn(v[4*i + 0]*inv);
+        const int q1 = __float2int_rn(v[4*i + 1]*inv);
+        const int q2 = __float2int_rn(v[4*i + 2]*inv);
+        const int q3 = __float2int_rn(v[4*i + 3]*inv);
+        q[i] = (q0 & 0xFF) | ((q1 & 0xFF) << 8) | ((q2 & 0xFF) << 16) | ((uint32_t) (q3 & 0xFF) << 24);
+    }
+    return __half2float(b->d) * (amax * (1.0f/127.0f));
+}
