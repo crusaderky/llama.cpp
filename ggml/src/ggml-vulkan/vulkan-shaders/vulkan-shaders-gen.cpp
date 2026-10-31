@@ -51,6 +51,8 @@ const std::vector<std::string> type_names = {
     "f16",
     "q1_0",
     "tq2_t",
+    "tqk6",
+    "tqk7",
     "q2_0",
     "q4_0",
     "q4_1",
@@ -252,7 +254,7 @@ bool is_iq_quant(const std::string& type_name) {
 // case of the unified MULMAT_QUANT shader. The trellis types keep their own shader too:
 // their decode needs the codebook tables, the same shape as the IQ/FP4 types.
 bool is_trellis_quant(const std::string& type_name) {
-    return type_name == "tq2_t";
+    return type_name == "tq2_t" || type_name == "tqk6" || type_name == "tqk7";
 }
 
 bool is_lut_quant(const std::string& type_name) {
