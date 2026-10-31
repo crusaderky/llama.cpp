@@ -50,6 +50,7 @@ const std::vector<std::string> type_names = {
     "f32",
     "f16",
     "q1_0",
+    "tq2_t",
     "q2_0",
     "q4_0",
     "q4_1",
@@ -246,12 +247,21 @@ bool is_iq_quant(const std::string& type_name) {
     return string_starts_with(type_name, "iq");
 }
 
+
+// Types whose mul_mm A-load is a per-type SPIR-V (DATA_A_<TYPE> define) rather than a
+// case of the unified MULMAT_QUANT shader. The trellis types keep their own shader too:
+// their decode needs the codebook tables, the same shape as the IQ/FP4 types.
+bool is_trellis_quant(const std::string& type_name) {
+    return type_name == "tq2_t";
+}
+
 bool is_lut_quant(const std::string& type_name) {
     return is_iq_quant(type_name) || type_name == "mxfp4" || type_name == "nvfp4";
 }
 
 std::string lut_load_vec_a(const std::string& type_name) {
-    if (type_name == "iq1_s" || type_name == "iq1_m" || type_name == "iq2_xxs" || type_name == "iq2_xs" || type_name == "iq2_s" || type_name == "iq4_xs") {
+    if (type_name == "iq1_s" || type_name == "iq1_m" || type_name == "iq2_xxs" || type_name == "iq2_xs" || type_name == "iq2_s" || type_name == "iq4_xs" ||
+        is_trellis_quant(type_name)) {
         return "8";
     }
     return "4";
