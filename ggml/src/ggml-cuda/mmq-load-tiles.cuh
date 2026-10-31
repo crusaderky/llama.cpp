@@ -1616,14 +1616,16 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 // decodes its 4 trellis steps and requantizes them to int8 with one scale per 16 weights, filling
 // the Q8_0_16 tile layout (as IQ2_XS). One MMQ_ITER_K slice of a row is 2 blocks = 16 lanes.
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_tq(
-        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+        const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    GGML_UNUSED(x_gate);
+
     // ggml_cuda_mmq_get_util_funcs names this loader for every type; only trellis types reach it.
     constexpr ggml_type tq_type = ggml_cuda_type_is_tq(type) ? type : GGML_TYPE_TQ2_T;
     typedef typename tq_block_info<tq_type>::block_t block_t;
     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
-    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
-    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
-    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
+    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback, GGML_PREC_Q8) / warp_size;
+    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback, GGML_PREC_Q8);
+    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback, GGML_PREC_Q8);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     int   * x_qs = (int   *)  x_tile;
