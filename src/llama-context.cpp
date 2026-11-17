@@ -3100,7 +3100,13 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     const uint32_t tail_nodes = (cparams.kv_tail_tokens > 0 || cparams.kv_tail_tokens_swa > 0) ?
             96u*model.hparams.n_layer_all : 0;
     uint32_t res;
-    if (model.arch == LLM_ARCH_KIMI_K3 || model.arch == LLM_ARCH_GLM5_NEXT) {
+    if (model.arch == LLM_ARCH_SENSENOVA_LOOP) {
+        uint32_t n_mhc = model.hparams.mhc_end - model.hparams.mhc_start;
+        if (model.hparams.mhc_start >= model.hparams.loop_start && model.hparams.mhc_end <= model.hparams.loop_end) {
+            n_mhc *= model.hparams.loop_count;
+        }
+        res = std::max<uint32_t>(1024u, 64u * model.n_tensors() + 128u * model.hparams.n_layer() + 48u * model.hparams.mhc_iterations * n_mhc);
+    } else if (model.arch == LLM_ARCH_KIMI_K3 || model.arch == LLM_ARCH_GLM5_NEXT) {
         // the n_tokens*40 budget below is exhausted at ubatch 3840
         res = std::max<uint32_t>(n_tokens * 160, 64u * model.n_tensors());
     } else if (model.arch == LLM_ARCH_HRM_TEXT) {

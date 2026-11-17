@@ -35,6 +35,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_QWEN2MOE,         "qwen2moe"         },
     { LLM_ARCH_QWEN2VL,          "qwen2vl"          },
     { LLM_ARCH_SENSENOVA_U1,     "sensenova_u1"     },
+    { LLM_ARCH_SENSENOVA_LOOP,   "sensenova_loop"   },
     { LLM_ARCH_QWEN3,            "qwen3"            },
     { LLM_ARCH_FLINT,            "flint"            },
     { LLM_ARCH_QWEN3MOE,         "qwen3moe"         },
@@ -333,6 +334,16 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_SHARED_KV_LAYERS,             "%s.attention.shared_kv_layers"             },
     { LLM_KV_ATTENTION_KV_SOURCE_MAP,                "%s.attention.kv_source_map"                },
     { LLM_KV_ATTENTION_RECURRENT_LAYERS,             "%s.attention.recurrent_layers"             },
+
+    { LLM_KV_LOOP_START,                             "%s.loop.start"                             },
+    { LLM_KV_LOOP_END,                               "%s.loop.end"                               },
+    { LLM_KV_LOOP_COUNT,                             "%s.loop.count"                             },
+    { LLM_KV_MHC_START,                              "%s.mhc.start"                              },
+    { LLM_KV_MHC_END,                                "%s.mhc.end"                                },
+    { LLM_KV_MHC_STREAMS,                            "%s.mhc.streams"                            },
+    { LLM_KV_MHC_ITERATIONS,                         "%s.mhc.iterations"                         },
+    { LLM_KV_MHC_PRE_SCALE,                          "%s.mhc.pre_scale"                          },
+    { LLM_KV_MHC_FIXED_IDENTITY,                     "%s.mhc.fixed_identity"                     },
 
     { LLM_KV_HYPER_CONNECTION_COUNT,                 "%s.hyper_connection.count"                 },
     { LLM_KV_HYPER_CONNECTION_SINKHORN_ITERATIONS,   "%s.hyper_connection.sinkhorn_iterations"   },
@@ -1291,6 +1302,7 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
         case LLM_ARCH_KIMI_K3:
         case LLM_ARCH_GLM5_NEXT:
         case LLM_ARCH_QWEN35:
+        case LLM_ARCH_SENSENOVA_LOOP:
         case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_DEEPSEEK4:
@@ -1354,6 +1366,7 @@ bool llm_arch_supports_mixed_batch(const llm_arch & arch) {
 
 bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
     switch (arch) {
+        case LLM_ARCH_SENSENOVA_LOOP:
         case LLM_ARCH_GROK:
         case LLM_ARCH_MPT:
         case LLM_ARCH_PLAMO2:
