@@ -106,11 +106,11 @@ llama_model_sensenova_loop::graph::routing llama_model_sensenova_loop::graph::bu
         ggml_tensor * a, ggml_tensor * b, ggml_tensor * weight, ggml_tensor * bias, int il) {
     // Fused router: one node for the RMS norm over both streams, the eight logits, the
     // two input gates, the two output gates and the `mhc_iterations` Sinkhorn passes.
-    // Unfused, one router is ~650 nodes -- 20 iterations x 4 log-softmaxes x 4 nodes,
-    // plus the gates -- and there are 192 of them per token (2 sublayers x 24 looped
-    // layer visits x 2 passes), which cost 3.6x the decode rate on a 3090 at 4 nodes
-    // per kernel launch. GGML_OP_MHC_ROUTE bakes in the two things that make that
-    // fusion possible: eight logits (i.e. not the fixed-identity layout) and
+    // Unfused, one router is ~600 nodes -- 20 iterations x 4 log-softmaxes x 7 nodes,
+    // plus the gates -- and there are 96 of them per token (24 looped layers x 2 visits
+    // x 2 sublayers), so ~56k tiny nodes per token, at a handful of microseconds per
+    // kernel launch: 3.6x the decode rate on a 3090. GGML_OP_MHC_ROUTE bakes in the two
+    // things that make that fusion possible: eight logits (not the fixed-identity layout) and
     // mhc_pre_scale == 1, both of which every published SenseNova-Loop GGUF carries.
     if (!hparams.mhc_fixed_identity && hparams.mhc_pre_scale == 1.0f) {
         routing result{};
