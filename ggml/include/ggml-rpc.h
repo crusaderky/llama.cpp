@@ -10,10 +10,12 @@ extern "C" {
 // peers at HELLO rather than interpreting their operation numbers as Bee ops.
 #define RPC_PROTO_MAJOR_VERSION    9
 #define RPC_PROTO_MINOR_VERSION    0
-#define RPC_PROTO_PATCH_VERSION    0
+// 1: added GGML_OP_MHC_ROUTE / GGML_OP_MHC_MERGE (sensenova_loop mHC routers),
+//    which shift every op number after them on the wire
+#define RPC_PROTO_PATCH_VERSION    1
 
 #ifdef  __cplusplus
-static_assert(GGML_OP_COUNT == 106, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+static_assert(GGML_OP_COUNT == 108, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
 #endif
 
 #define GGML_RPC_MAX_SERVERS       16
