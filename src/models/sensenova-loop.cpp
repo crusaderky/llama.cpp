@@ -104,6 +104,23 @@ std::unique_ptr<llm_graph_context> llama_model_sensenova_loop::build_arch_graph(
 
 llama_model_sensenova_loop::graph::routing llama_model_sensenova_loop::graph::build_route(
         ggml_tensor * a, ggml_tensor * b, ggml_tensor * weight, ggml_tensor * bias, int il) {
+    // Fused router: one node for the RMS norm over both streams, the eight logits, the
+    // two input gates, the two output gates and the `mhc_iterations` Sinkhorn passes.
+    // Unfused, one router is ~650 nodes -- 20 iterations x 4 log-softmaxes x 4 nodes,
+    // plus the gates -- and there are 192 of them per token (2 sublayers x 24 looped
+    // layer visits x 2 passes), which cost 3.6x the decode rate on a 3090 at 4 nodes
+    // per kernel launch. GGML_OP_MHC_ROUTE bakes in the two things that make that
+    // fusion possible: eight logits (i.e. not the fixed-identity layout) and
+    // mhc_pre_scale == 1, both of which every published SenseNova-Loop GGUF carries.
+    if (!hparams.mhc_fixed_identity && hparams.mhc_pre_scale == 1.0f) {
+        routing result{};
+        result.packed = ggml_mhc_route(ctx0, a, b, weight, bias);
+        result.input  = ggml_view_3d(ctx0, result.packed, a->ne[0], a->ne[1], a->ne[2],
+                result.packed->nb[1], result.packed->nb[2], 0);
+        cb(result.input, "mhc_input", il);
+        return result;
+    }
+
     ggml_tensor * flat = ggml_concat(ctx0, a, b, 0);
     flat = ggml_rms_norm(ctx0, flat, 1e-6f);
     ggml_tensor * logits = build_lora_mm(weight, flat);
@@ -147,6 +164,18 @@ llama_model_sensenova_loop::graph::routing llama_model_sensenova_loop::graph::bu
 
 void llama_model_sensenova_loop::graph::build_merge(
         ggml_tensor * & a, ggml_tensor * & b, ggml_tensor * branch, const routing & route) {
+    if (route.packed) {
+        // the two merged streams come back as one [2*n_embd, n_tok] node, so split it
+        ggml_tensor * merged = ggml_mhc_merge(ctx0, a, b, branch, route.packed);
+        ggml_tensor * next_a = ggml_view_3d(ctx0, merged, a->ne[0], a->ne[1], a->ne[2],
+                merged->nb[1], merged->nb[2], 0);
+        ggml_tensor * next_b = ggml_view_3d(ctx0, merged, a->ne[0], a->ne[1], a->ne[2],
+                merged->nb[1], merged->nb[2], (size_t) a->ne[0]*merged->nb[0]);
+        a = next_a;
+        b = next_b;
+        return;
+    }
+
     ggml_tensor * next_a = a;
     ggml_tensor * next_b = b;
     if (!hparams.mhc_fixed_identity) {
@@ -197,9 +226,14 @@ llama_model_sensenova_loop::graph::graph(const llama_model & model, const llm_gr
             if (mhc) {
                 a = ggml_get_rows(ctx0, a, inp_out_ids);
                 b = ggml_get_rows(ctx0, b, inp_out_ids);
-                for (auto & post : attn_route.post) { post = ggml_get_rows(ctx0, post, inp_out_ids); }
-                if (!hparams.mhc_fixed_identity) {
-                    for (auto & mix : attn_route.mix) { mix = ggml_get_rows(ctx0, mix, inp_out_ids); }
+                if (attn_route.packed) {
+                    // gates and mixing matrix ride inside `packed`, so crop them with it
+                    attn_route.packed = ggml_get_rows(ctx0, attn_route.packed, inp_out_ids);
+                } else {
+                    for (auto & post : attn_route.post) { post = ggml_get_rows(ctx0, post, inp_out_ids); }
+                    if (!hparams.mhc_fixed_identity) {
+                        for (auto & mix : attn_route.mix) { mix = ggml_get_rows(ctx0, mix, inp_out_ids); }
+                    }
                 }
             }
         }

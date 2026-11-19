@@ -2719,6 +2719,10 @@ struct llama_model_sensenova_loop : public llama_model_qwen35 {
             ggml_tensor * input;
             ggml_tensor * post[2];
             ggml_tensor * mix[4];
+            // set only on the fused path: the GGML_OP_MHC_ROUTE output, carrying the
+            // routed input in rows 0..d-1 and the two output gates and the 2x2 mixing
+            // matrix after it, so GGML_OP_MHC_MERGE reads all six back out of it
+            ggml_tensor * packed = nullptr;
         };
 
         routing build_route(ggml_tensor * a, ggml_tensor * b, ggml_tensor * weight, ggml_tensor * bias, int il);
